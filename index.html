@@ -44,13 +44,12 @@ strong { font-weight: 600; }
   color: #fff; overflow: hidden; display: flex; align-items: center; }
 .hero-inner { position: relative; z-index: 3; width: 100%; max-width: 1120px; margin: 0 auto; padding: 110px 24px 120px; }
 .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
-.hero canvas.lights { z-index: 1; }
 .hero-shade { position: absolute; inset: 0; z-index: 2; pointer-events: none;
   background: linear-gradient(90deg, rgba(11,18,32,.96) 0%, rgba(11,18,32,.86) 40%, rgba(11,18,32,.4) 62%, rgba(11,18,32,0) 80%),
               linear-gradient(0deg, rgba(11,18,32,.55), rgba(11,18,32,0) 22%); }
 @media (max-width: 760px) { .hero-shade { background: linear-gradient(180deg, rgba(11,18,32,.94) 0%, rgba(11,18,32,.82) 50%, rgba(11,18,32,.15) 78%, rgba(11,18,32,.35) 100%); } }
 .ticker { display: inline-flex; align-items: center; gap: 14px; margin-top: 32px; padding: 12px 20px 12px 12px; border-radius: 16px; max-width: 600px;
-  background: rgba(20,30,51,.72); box-shadow: inset 0 0 0 1px var(--night-line); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  background: rgba(17,26,45,.9); box-shadow: inset 0 0 0 1px var(--night-line); }
 .ticker svg { width: 46px; height: 46px; transform: rotate(-90deg); flex: none; }
 .ticker .ring-bg { fill: none; stroke: var(--night-line); stroke-width: 3.5; }
 .ticker .ring-fg { fill: none; stroke: var(--red); stroke-width: 3.5; stroke-linecap: round; transition: stroke-dashoffset .25s linear; }
@@ -227,7 +226,6 @@ footer p { margin: 0 0 6px; }
 
 <header class="hero" id="top">
   <canvas id="roadCv" aria-hidden="true"></canvas>
-  <canvas id="lightCv" class="lights" aria-hidden="true"></canvas>
   <div class="hero-shade"></div>
   <div class="hero-inner">
     <p class="kicker fade d1">โครงงานวิชา 344-333 · กลุ่มบองหลา · มหาวิทยาลัยสงขลานครินทร์</p>
@@ -738,40 +736,94 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
    comes down the right. Motorcycles keep to the kerb, and most riders have no helmet, as in the data.
    An ambulance passes each time the injury clock completes. */
 (function () {
-  const road = document.getElementById("roadCv"), lights = document.getElementById("lightCv");
+  const road = document.getElementById("roadCv");
   if (!road.getContext) return;
-  const rc = road.getContext("2d"), lc = lights.getContext("2d");
-  const FAR = 90, NEAR = 0.6, RW = 3.3, CAM = 9, LAMP_GAP = 13, DASH = 10, TRAIL = 0.32, ONC_START = 60, OWN_END = 50;
+  const rc = road.getContext("2d", { alpha: false }), lc = rc;  // one opaque canvas; lights are added on top of the road
+  const FAR = 90, NEAR = 0.6, RW = 3.3, CAM = 9, LAMP_GAP = 13, DASH = 10, TRAIL = 0.32, ONC_START = 60, OWN_END = 50, OWN_FADE = 38,
+    CX = -0.82, ZMIN = 0.05;  // the camera rides in the middle of our inner lane
+  // everything that does not move is drawn once: light sprites, streak sprites and the sky and ground
+  function sprite(w, h, paint) { const c = document.createElement("canvas"); c.width = w; c.height = h; paint(c.getContext("2d"), w, h); return c; }
+  const GLOW = {}, STREAK = {};
+  for (const rgb of ["255,186,96", "255,46,46", "255,236,200", "255,255,255", "255,40,40", "60,120,255"]) {
+    GLOW[rgb] = sprite(128, 128, (g, w) => {
+      const r = g.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
+      r.addColorStop(0, `rgba(${rgb},1)`); r.addColorStop(0.35, `rgba(${rgb},.45)`); r.addColorStop(1, `rgba(${rgb},0)`);
+      g.fillStyle = r; g.fillRect(0, 0, w, w);
+    });
+    STREAK[rgb] = sprite(256, 16, (g, w, h) => {
+      const l = g.createLinearGradient(0, 0, w, 0);
+      l.addColorStop(0, `rgba(${rgb},0)`); l.addColorStop(1, `rgba(${rgb},1)`);
+      g.fillStyle = l; g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w - h / 2, 1); g.arc(w - h / 2, h / 2, h / 2 - 1, -Math.PI / 2, Math.PI / 2); g.closePath(); g.fill();
+    });
+  }
+  const POOL = sprite(128, 128, (g, w) => {
+    const r = g.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
+    r.addColorStop(0, "rgba(255,184,92,.13)"); r.addColorStop(1, "rgba(255,184,92,0)");
+    g.fillStyle = r; g.fillRect(0, 0, w, w);
+  });
+  let BG = null, FOG = null;
   const BODY = ["#2b3242", "#3a4152", "#1f2531", "#4a2025", "#6f7887", "#9aa1ad", "#2e3a31", "#40352a"];
   const SHIRT = ["#34405a", "#5a4632", "#3f4f44", "#6b2f2f", "#4a4f5c", "#2f5d73"];
   const HELMET = ["#e8e8e8", "#d62828", "#f5b83d", "#2a78d6"];
   const pickOne = a => a[Math.floor(Math.random() * a.length)];
   let W = 0, H = 0, vpX = 0, vpY = 0, baseX = 0, S = 0, t = 0, last = 0, visible = true, raf = 0;
   const cars = [], rnd = (a, b) => a + Math.random() * (b - a);
-  const P = (X, Y, z) => [vpX + S * X / z, vpY + S * (1 - Y) / z];
+  const P = (X, Y, z) => [vpX + S * (X - CX) / z, vpY + S * (1 - Y) / z];
   function resize() {
-    const r = hero.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+    const r = hero.getBoundingClientRect(), dpr = Math.min(1.5, window.devicePixelRatio || 1);
     W = r.width; H = r.height;
-    for (const c of [road, lights]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); c.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0); }
+    road.width = Math.round(W * dpr); road.height = Math.round(H * dpr); rc.setTransform(dpr, 0, 0, dpr, 0, 0);
     const narrow = W < 760;
     baseX = vpX = narrow ? W * 0.5 : W * 0.7; vpY = H * (narrow ? 0.64 : 0.5); S = (H - vpY) * 1.02;
+    BG = sprite(Math.max(1, Math.round(W * dpr)), Math.max(1, Math.round(H * dpr)), g => {
+      g.scale(dpr, dpr);
+      g.fillStyle = "#0b1220"; g.fillRect(0, 0, W, H);
+      const R = Math.hypot(W / 2, H * 1.15), base = g.createRadialGradient(W / 2, H * 1.15, 0, W / 2, H * 1.15, R);
+      base.addColorStop(0, "#22335a"); base.addColorStop(0.62, "#0b1220"); base.addColorStop(1, "#0b1220");
+      g.fillStyle = base; g.fillRect(0, 0, W, H);
+      const sky = g.createLinearGradient(0, vpY - H * 0.4, 0, vpY + 1);
+      sky.addColorStop(0, "rgba(11,18,32,0)"); sky.addColorStop(1, "rgba(78,98,150,.30)");
+      g.fillStyle = sky; g.fillRect(0, vpY - H * 0.4, W, H * 0.4 + 1);
+      const ground = g.createLinearGradient(0, vpY, 0, vpY + (H - vpY) * 0.45);
+      ground.addColorStop(0, "#2a3246"); ground.addColorStop(1, "#090e19");
+      g.fillStyle = ground; g.fillRect(0, vpY, W, H - vpY);
+      const halo = g.createRadialGradient(baseX, vpY, 0, baseX, vpY, W * 0.45);
+      halo.addColorStop(0, "rgba(255,190,120,.10)"); halo.addColorStop(1, "rgba(255,190,120,0)");
+      g.fillStyle = halo; g.fillRect(0, 0, W, H);
+    });
+    FOG = rc.createLinearGradient(0, vpY, 0, vpY + (H - vpY) * 0.3);
+    FOG.addColorStop(0, "rgba(43,50,70,.96)"); FOG.addColorStop(1, "rgba(43,50,70,0)");
   }
   function quad(ctx, X, w, z0, z1, color) {
     z0 = Math.max(z0, NEAR); z1 = Math.min(z1, FAR); if (z1 <= z0) return;
     const a = P(X - w / 2, 0, z0), b = P(X + w / 2, 0, z0), c = P(X + w / 2, 0, z1), d = P(X - w / 2, 0, z1);
     ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.closePath(); ctx.fill();
   }
-  function spawn(kind, z) {
-    const own = kind === "own", amb = kind === "amb", r = Math.random(), side = own ? -1 : 1;
-    const type = amb ? "amb" : r < 0.45 ? "moto" : r < 0.85 ? "car" : "pickup";
-    const X = amb ? 0.8 : type === "moto" ? side * rnd(2.75, 2.95) : side * (Math.random() < 0.5 ? 0.8 : 1.95);
-    // our side fades in at mid distance so a passing car never fills the screen behind the headline
-    cars.push({ X, type, own, amb, z: z !== undefined ? z : (own ? rnd(4, 5) : ONC_START), born: z !== undefined ? -10 : t,
-      v: own ? rnd(1, 4) : -rnd(11, 18), color: pickOne(BODY), shirt: pickOne(SHIRT),
-      helmet: Math.random() < 0.2 ? pickOne(HELMET) : null });
+  // two lanes each way; a lane moves at one speed, so no vehicle ever drives through another.
+  // On our side the outer lane overtakes us from behind, and our own lane only shows cars pulling away far ahead.
+  const LANES = [
+    { own: false, X: 0.82, v: -15, moto: 0, gap: [8, 20], start: ONC_START },
+    { own: false, X: 2.45, v: -12, moto: 0.75, gap: [7, 16], start: ONC_START },
+    { own: true, X: -0.82, v: 1.2, moto: 0, gap: [8, 16], start: 22 },
+    { own: true, X: -2.45, v: 3, moto: 0.75, gap: [5, 12], start: 0.3, behind: true }];
+  let ambWaiting = false;
+  function spawn(L, z) {
+    const amb = L === LANES[0] && ambWaiting, r = Math.random(), side = L.own ? -1 : 1;
+    if (amb) ambWaiting = false;
+    const type = amb ? "amb" : r < L.moto ? "moto" : r < L.moto + (1 - L.moto) * 0.7 ? "car" : "pickup";
+    const X = type === "moto" ? side * rnd(2.55, 2.8) : L.X;
+    // vehicles placed at load are simply there; a new one fades in, except an overtaker, which starts
+    // just past the left edge of the screen however wide the screen is
+    const fresh = z === undefined;
+    if (fresh) z = L.behind ? Math.max(ZMIN, Math.min(L.start, S * (CX - X - 0.9) / vpX)) : L.start;
+    const c = { X, type, own: L.own, amb, z, born: fresh && !L.behind ? t : -10,
+      v: L.v, color: pickOne(BODY), shirt: pickOne(SHIRT), helmet: Math.random() < 0.2 ? pickOne(HELMET) : null };
+    cars.push(c); L.last = c; L.gapNow = rnd(L.gap[0], L.gap[1]);
   }
-  for (let i = 0; i < 11; i++) spawn("onc", rnd(3, ONC_START));
-  for (let i = 0; i < 11; i++) spawn("own", rnd(4, OWN_END));
+  for (const L of LANES) {
+    if (L.own) for (let z = OWN_END - rnd(0, L.gap[1]); z > L.start; z -= rnd(L.gap[0], L.gap[1])) spawn(L, z);
+    else for (let z = rnd(2, 8); z < ONC_START; z += rnd(L.gap[0], L.gap[1])) spawn(L, z);
+  }
   function shade(hex, f) {
     const n = parseInt(hex.slice(1), 16), c = [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.min(255, Math.round(v * f * 0.85)));
     return `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -785,15 +837,18 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
   function drawCar(c) {
     const { hw, belt, top, cw, tw } = SPEC[c.type];
     rc.fillStyle = "#06080d"; rc.fillRect(-hw + 0.06, -0.3, 0.26, 0.3); rc.fillRect(hw - 0.32, -0.3, 0.26, 0.3);
-    const g = rc.createLinearGradient(0, belt, 0, -0.2);
-    g.addColorStop(0, shade(c.color, 1.3)); g.addColorStop(1, shade(c.color, 0.7));
-    rc.fillStyle = g; rr(-hw, belt, hw * 2, -0.2 - belt, 0.1); rc.fill();
-    rc.fillStyle = shade(c.color, 1.1);
+    if (!c.gBody) {
+      c.gBody = rc.createLinearGradient(0, belt, 0, -0.2);
+      c.gBody.addColorStop(0, shade(c.color, 1.3)); c.gBody.addColorStop(1, shade(c.color, 0.7));
+      c.gGlass = rc.createLinearGradient(0, top, 0, belt);
+      c.gGlass.addColorStop(0, "#4a5f86"); c.gGlass.addColorStop(1, "#0b111d");
+      c.cTop = shade(c.color, 1.1);
+    }
+    rc.fillStyle = c.gBody; rr(-hw, belt, hw * 2, -0.2 - belt, 0.1); rc.fill();
+    rc.fillStyle = c.cTop;
     rc.beginPath(); rc.moveTo(-cw, belt); rc.lineTo(-tw, top + 0.04); rc.quadraticCurveTo(0, top - 0.04, tw, top + 0.04); rc.lineTo(cw, belt);
     rc.closePath(); rc.fill();
-    const gl = rc.createLinearGradient(0, top, 0, belt);
-    gl.addColorStop(0, "#4a5f86"); gl.addColorStop(1, "#0b111d");
-    rc.fillStyle = gl;
+    rc.fillStyle = c.gGlass;
     rc.beginPath(); rc.moveTo(-cw + 0.08, belt - 0.04); rc.lineTo(-tw + 0.06, top + 0.11); rc.lineTo(tw - 0.06, top + 0.11);
     rc.lineTo(cw - 0.08, belt - 0.04); rc.closePath(); rc.fill();
     rc.strokeStyle = "rgba(255,214,160,.35)"; rc.lineWidth = 0.035;
@@ -808,7 +863,7 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
   }
   function drawMoto(c) {
     rc.fillStyle = "#06080d"; rr(-0.07, -0.56, 0.14, 0.56, 0.05); rc.fill();
-    rc.fillStyle = shade(c.color, 1.15); rr(-0.21, -0.96, 0.42, 0.46, 0.1); rc.fill();
+    rc.fillStyle = c.cTop || (c.cTop = shade(c.color, 1.15)); rr(-0.21, -0.96, 0.42, 0.46, 0.1); rc.fill();
     rc.strokeStyle = "#11151d"; rc.lineWidth = 0.05; rc.beginPath(); rc.moveTo(-0.36, -1.08); rc.lineTo(0.36, -1.08); rc.stroke();
     rc.fillStyle = c.shirt;
     rc.beginPath(); rc.moveTo(-0.25, -0.92); rc.lineTo(0.25, -0.92); rc.lineTo(0.2, -1.5); rc.quadraticCurveTo(0, -1.6, -0.2, -1.5); rc.closePath(); rc.fill();
@@ -828,19 +883,20 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
     const hw = 0.82, on = Math.floor(t * 6) % 2 === 0;
     rc.fillStyle = "#06080d"; rc.fillRect(-hw + 0.06, -0.3, 0.28, 0.3); rc.fillRect(hw - 0.34, -0.3, 0.28, 0.3);
     rc.fillStyle = "#dfe3ea"; rr(-hw, -2.05, hw * 2, 1.84, 0.14); rc.fill();
-    const gl = rc.createLinearGradient(0, -1.95, 0, -1.3);
-    gl.addColorStop(0, "#4a5f86"); gl.addColorStop(1, "#0b111d");
-    rc.fillStyle = gl; rr(-hw + 0.1, -1.92, hw * 2 - 0.2, 0.6, 0.08); rc.fill();
+    if (!c.gGlass) { c.gGlass = rc.createLinearGradient(0, -1.95, 0, -1.3); c.gGlass.addColorStop(0, "#4a5f86"); c.gGlass.addColorStop(1, "#0b111d"); }
+    rc.fillStyle = c.gGlass; rr(-hw + 0.1, -1.92, hw * 2 - 0.2, 0.6, 0.08); rc.fill();
     rc.fillStyle = "#d62828"; rc.fillRect(-hw, -1.08, hw * 2, 0.13);
     rc.fillStyle = "#fff4d6"; rc.fillRect(-hw + 0.08, -0.72, 0.3, 0.11); rc.fillRect(hw - 0.38, -0.72, 0.3, 0.11);
     rc.fillStyle = on ? "#ff3030" : "#3a78ff"; rc.fillRect(-0.5, -2.2, 0.5, 0.15);
     rc.fillStyle = on ? "#3a78ff" : "#ff3030"; rc.fillRect(0, -2.2, 0.5, 0.15);
   }
+  // true while any part of the vehicle, with a metre to spare for its glow, is inside the screen
+  const onScreen = c => vpX + S * (c.X - CX + 1) / c.z > 0 && vpX + S * (c.X - CX - 1) / c.z < W;
   function beam(c) {
-    if (c.own || c.z < NEAR + 0.4 || c.z > FAR * 0.8) return;
+    if (c.own || c.z < NEAR + 0.4 || c.z > 35) return;
     const zn = Math.max(NEAR, c.z - 8), w0 = c.type === "moto" ? 0.2 : 0.6, w1 = c.type === "moto" ? 1.1 : 2.1;
     const a = P(c.X - w0, 0, c.z), b = P(c.X + w0, 0, c.z), q = P(c.X + w1, 0, zn), d = P(c.X - w1, 0, zn);
-    const g = rc.createLinearGradient(0, a[1], 0, d[1]), fade = Math.min(1, (FAR * 0.8 - c.z) / 20);
+    const g = rc.createLinearGradient(0, a[1], 0, d[1]), fade = Math.min(1, (35 - c.z) / 10, (t - c.born) / 0.8, (c.z - NEAR - 0.4) / 3);
     g.addColorStop(0, `rgba(255,236,200,${0.12 * fade})`); g.addColorStop(1, "rgba(255,236,200,0)");
     rc.fillStyle = g; rc.beginPath(); rc.moveTo(a[0], a[1]); rc.lineTo(b[0], b[1]); rc.lineTo(q[0], q[1]); rc.lineTo(d[0], d[1]);
     rc.closePath(); rc.fill();
@@ -850,12 +906,12 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
     for (const c of cars) beam(c);
     rc.globalCompositeOperation = "source-over";
     for (const c of [...cars].sort((a, b) => b.z - a.z)) {
-      if (c.z < NEAR || c.z > FAR * 0.85) continue;
+      if (c.z < ZMIN || c.z > FAR * 0.85 || !onScreen(c)) continue;
       const k = S / c.z;
       if (k < 1.5) continue;
       rc.save();
-      rc.globalAlpha = Math.max(0, Math.min(1, (FAR * 0.85 - c.z) / 25, (t - c.born) / 0.8));
-      rc.translate(vpX + S * c.X / c.z, vpY + S / c.z); rc.scale(k, k);
+      rc.globalAlpha = Math.max(0, Math.min(1, (FAR * 0.85 - c.z) / 25, (t - c.born) / 0.8, c.own ? (OWN_END - c.z) / (OWN_END - OWN_FADE) : 1));
+      rc.translate(vpX + S * (c.X - CX) / c.z, vpY + S / c.z); rc.scale(k, k);
       rc.fillStyle = "rgba(0,0,0,.45)"; rc.beginPath(); rc.ellipse(0, 0, c.type === "moto" ? 0.35 : 0.88, 0.08, 0, 0, Math.PI * 2); rc.fill();
       if (c.type === "moto") drawMoto(c); else if (c.type === "amb") drawVan(c); else drawCar(c);
       rc.restore();
@@ -869,16 +925,7 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
     return c.own ? [[-hw + 0.19, -belt - 0.16], [hw - 0.19, -belt - 0.16]] : [[-hw + 0.21, -belt - 0.21], [hw - 0.21, -belt - 0.21]];
   }
   function drawRoad() {
-    rc.clearRect(0, 0, W, H);
-    const sky = rc.createLinearGradient(0, vpY - H * 0.4, 0, vpY + 1);
-    sky.addColorStop(0, "rgba(11,18,32,0)"); sky.addColorStop(1, "rgba(78,98,150,.30)");
-    rc.fillStyle = sky; rc.fillRect(0, vpY - H * 0.4, W, H * 0.4 + 1);
-    const ground = rc.createLinearGradient(0, vpY, 0, vpY + (H - vpY) * 0.45);
-    ground.addColorStop(0, "#2a3246"); ground.addColorStop(1, "#090e19");
-    rc.fillStyle = ground; rc.fillRect(0, vpY, W, H - vpY);
-    const halo = rc.createRadialGradient(vpX, vpY, 0, vpX, vpY, W * 0.45);
-    halo.addColorStop(0, "rgba(255,190,120,.10)"); halo.addColorStop(1, "rgba(255,190,120,0)");
-    rc.fillStyle = halo; rc.fillRect(0, 0, W, H);
+    rc.drawImage(BG, 0, 0, W, H);
     quad(rc, 0, RW * 2 + 1.6, NEAR, FAR, "#121a2b");
     quad(rc, 0, RW * 2, NEAR, FAR, "#192235");
     const off = (t * CAM) % LAMP_GAP;
@@ -886,10 +933,7 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
       const z = NEAR + k * LAMP_GAP - off + LAMP_GAP * .5; if (z < NEAR || z > FAR) continue;
       for (const side of [-1, 1]) {
         const [px, py] = P(side * (RW * .6), 0, z), r = S * 2.2 / z;
-        const pool = rc.createRadialGradient(px, py, 0, px, py, r);
-        pool.addColorStop(0, `rgba(255,184,92,${0.13 * Math.min(1, 6 / z)})`); pool.addColorStop(1, "rgba(255,184,92,0)");
-        rc.save(); rc.translate(px, py); rc.scale(1, 0.28); rc.translate(-px, -py);
-        rc.fillStyle = pool; rc.beginPath(); rc.arc(px, py, r, 0, Math.PI * 2); rc.fill(); rc.restore();
+        rc.globalAlpha = Math.min(1, 6 / z); rc.drawImage(POOL, px - r, py - r * 0.28, r * 2, r * 0.56); rc.globalAlpha = 1;
         const base = P(side * (RW + 0.9), 0, z), top = P(side * (RW + 0.9), 3.6, z), arm = P(side * (RW - 0.2), 3.6, z);
         rc.strokeStyle = "rgba(60,72,98,.9)"; rc.lineWidth = Math.max(0.6, S * 0.07 / z);
         rc.beginPath(); rc.moveTo(base[0], base[1]); rc.lineTo(top[0], top[1]); rc.lineTo(arm[0], arm[1]); rc.stroke();
@@ -901,27 +945,22 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
     for (const X of [-1.65, 1.65]) for (let k = 0; k * DASH < FAR + DASH; k++) {
       const z0 = NEAR + k * DASH - doff; quad(rc, X, 0.12, z0, z0 + 3, `rgba(230,234,244,${0.75 * Math.max(0, 1 - z0 / FAR)})`);
     }
-    const fog = rc.createLinearGradient(0, vpY, 0, vpY + (H - vpY) * 0.3);
-    fog.addColorStop(0, "rgba(43,50,70,.96)"); fog.addColorStop(1, "rgba(43,50,70,0)");
-    rc.fillStyle = fog; rc.fillRect(0, vpY - 1, W, (H - vpY) * 0.3 + 1);
+    rc.fillStyle = FOG; rc.fillRect(0, vpY - 1, W, (H - vpY) * 0.3 + 1);
   }
   function glow(x, y, r, rgb, a) {
+    if (a <= 0) return;
     if (r < 0.4) r = 0.4;
-    const g = lc.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(0.35, `rgba(${rgb},${a * 0.45})`); g.addColorStop(1, `rgba(${rgb},0)`);
-    lc.fillStyle = g; lc.beginPath(); lc.arc(x, y, r, 0, Math.PI * 2); lc.fill();
+    lc.globalAlpha = Math.min(1, a); lc.drawImage(GLOW[rgb], x - r, y - r, r * 2, r * 2); lc.globalAlpha = 1;
   }
   function streak(X, Y, z, zt, w, rgb, a) {
+    if (a <= 0) return;
     zt = Math.max(NEAR, Math.min(FAR, zt));
-    const [x0, y0] = P(X, Y, zt), [x1, y1] = P(X, Y, z);
-    const g = lc.createLinearGradient(x0, y0, x1, y1);
-    g.addColorStop(0, `rgba(${rgb},0)`); g.addColorStop(1, `rgba(${rgb},${a})`);
-    lc.strokeStyle = g; lc.lineWidth = Math.max(0.6, w); lc.lineCap = "round";
-    lc.beginPath(); lc.moveTo(x0, y0); lc.lineTo(x1, y1); lc.stroke();
+    const [x0, y0] = P(X, Y, zt), [x1, y1] = P(X, Y, z), len = Math.hypot(x1 - x0, y1 - y0), wd = Math.max(1, w);
+    if (len < 1) return;
+    lc.save(); lc.translate(x0, y0); lc.rotate(Math.atan2(y1 - y0, x1 - x0)); lc.globalAlpha = Math.min(1, a);
+    lc.drawImage(STREAK[rgb], 0, -wd / 2, len + wd / 2, wd); lc.restore();
   }
   function drawLights(trail) {
-    lc.globalCompositeOperation = "destination-out";
-    lc.fillStyle = `rgba(0,0,0,${trail ? 0.45 : 1})`; lc.fillRect(0, 0, W, H);
     lc.globalCompositeOperation = "lighter";
     const off = (t * CAM) % LAMP_GAP;
     for (let k = 0; k * LAMP_GAP < FAR + LAMP_GAP; k++) {
@@ -934,8 +973,9 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
       }
     }
     for (const c of cars) {
-      if (c.z < NEAR || c.z > FAR) continue;
-      const fade = Math.max(0, Math.min(1, (FAR - c.z) / 20, (t - c.born) / 0.8)), r = S * (c.own ? 0.11 : 0.18) / c.z;
+      if (c.z < ZMIN || c.z > FAR || !onScreen(c)) continue;
+      const fade = Math.max(0, Math.min(1, (FAR - c.z) / 20, (t - c.born) / 0.8, c.own ? (OWN_END - c.z) / (OWN_END - OWN_FADE) : 1));
+      const r = S * (c.own ? 0.11 : 0.18) / c.z;
       for (const [dx, Y] of lamps(c)) {
         const [x, y] = P(c.X + dx, Y, c.z);
         if (c.own) glow(x, y, r, "255,46,46", 0.9 * fade);
@@ -949,25 +989,28 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
       }
     }
   }
+  function endLights() { lc.globalCompositeOperation = "source-over"; }
   function frame(now) {
     const dt = last ? Math.min(0.05, (now - last) / 1000) : 0.016; last = now; t += dt;
     for (const c of cars) c.z += c.v * dt;
-    for (let i = cars.length - 1; i >= 0; i--) if (cars[i].z < NEAR - 0.1 || cars[i].z > (cars[i].own ? OWN_END : FAR)) cars.splice(i, 1);
-    const onc = cars.filter(c => !c.own && !c.amb).length, own = cars.filter(c => c.own).length;
-    if (onc < 11 && Math.random() < dt * 2.4) spawn("onc");
-    if (own < 11 && Math.random() < dt * 1.8) spawn("own");
+    for (let i = cars.length - 1; i >= 0; i--) {
+      const c = cars[i];
+      // oncoming traffic leaves past our right shoulder, so it is dropped only once it is fully off screen
+      if (c.own ? c.z > OWN_END : c.z < ZMIN || vpX + S * (c.X - CX - 0.9) / c.z > W) cars.splice(i, 1);
+    }
+    for (const L of LANES) if (!L.last || Math.abs(L.last.z - L.start) >= L.gapNow) spawn(L);
     vpX = baseX + Math.sin(t * 0.35) * W * 0.012;
-    drawRoad(); drawVehicles(); drawLights(true);
+    drawRoad(); drawVehicles(); drawLights(true); endLights();
     raf = visible && !document.hidden ? requestAnimationFrame(frame) : 0;
   }
   function start() { if (!raf && !reduce && visible && !document.hidden) { last = 0; raf = requestAnimationFrame(frame); } }
   resize();
-  if (reduce) { drawRoad(); drawVehicles(); drawLights(false); }
+  if (reduce) { drawRoad(); drawVehicles(); drawLights(false); endLights(); }
   else start();
-  addEventListener("resize", () => { resize(); if (reduce) { drawRoad(); drawVehicles(); drawLights(false); } });
+  addEventListener("resize", () => { resize(); if (reduce) { drawRoad(); drawVehicles(); drawLights(false); endLights(); } });
   new IntersectionObserver(es => { visible = es[0].isIntersecting; start(); }).observe(hero);
   document.addEventListener("visibilitychange", start);
-  window.__heroAmbulance = () => spawn("amb");
+  window.__heroAmbulance = () => { ambWaiting = true; };
 })();
 
 /* injury clock: one ring per injury at the dataset's average rate */
