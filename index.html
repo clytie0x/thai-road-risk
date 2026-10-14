@@ -46,7 +46,7 @@ strong { font-weight: 600; }
 .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
 .hero canvas.lights { z-index: 1; }
 .hero-shade { position: absolute; inset: 0; z-index: 2; pointer-events: none;
-  background: linear-gradient(90deg, rgba(11,18,32,.96) 0%, rgba(11,18,32,.82) 34%, rgba(11,18,32,.25) 62%, rgba(11,18,32,0) 80%),
+  background: linear-gradient(90deg, rgba(11,18,32,.96) 0%, rgba(11,18,32,.86) 40%, rgba(11,18,32,.4) 62%, rgba(11,18,32,0) 80%),
               linear-gradient(0deg, rgba(11,18,32,.55), rgba(11,18,32,0) 22%); }
 @media (max-width: 760px) { .hero-shade { background: linear-gradient(180deg, rgba(11,18,32,.94) 0%, rgba(11,18,32,.82) 50%, rgba(11,18,32,.15) 78%, rgba(11,18,32,.35) 100%); } }
 .ticker { display: inline-flex; align-items: center; gap: 14px; margin-top: 32px; padding: 12px 20px 12px 12px; border-radius: 16px; max-width: 600px;
@@ -734,13 +734,18 @@ const io = new IntersectionObserver(entries => {
 }, { threshold: 0.2 });
 document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.observe(n));
 
-/* hero: night highway in long exposure. Thailand drives on the left, so taillights recede on the left
-   and oncoming headlights come down the right. An ambulance passes each time the injury clock completes. */
+/* hero: night highway. Thailand drives on the left, so our traffic recedes on the left and oncoming traffic
+   comes down the right. Motorcycles keep to the kerb, and most riders have no helmet, as in the data.
+   An ambulance passes each time the injury clock completes. */
 (function () {
   const road = document.getElementById("roadCv"), lights = document.getElementById("lightCv");
   if (!road.getContext) return;
   const rc = road.getContext("2d"), lc = lights.getContext("2d");
-  const FAR = 90, NEAR = 0.6, RW = 3.3, CAM = 9, LAMP_GAP = 13, DASH = 10, TRAIL = 0.32;
+  const FAR = 90, NEAR = 0.6, RW = 3.3, CAM = 9, LAMP_GAP = 13, DASH = 10, TRAIL = 0.32, ONC_START = 60, OWN_END = 50;
+  const BODY = ["#2b3242", "#3a4152", "#1f2531", "#4a2025", "#6f7887", "#9aa1ad", "#2e3a31", "#40352a"];
+  const SHIRT = ["#34405a", "#5a4632", "#3f4f44", "#6b2f2f", "#4a4f5c", "#2f5d73"];
+  const HELMET = ["#e8e8e8", "#d62828", "#f5b83d", "#2a78d6"];
+  const pickOne = a => a[Math.floor(Math.random() * a.length)];
   let W = 0, H = 0, vpX = 0, vpY = 0, baseX = 0, S = 0, t = 0, last = 0, visible = true, raf = 0;
   const cars = [], rnd = (a, b) => a + Math.random() * (b - a);
   const P = (X, Y, z) => [vpX + S * X / z, vpY + S * (1 - Y) / z];
@@ -757,12 +762,112 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
     ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.closePath(); ctx.fill();
   }
   function spawn(kind, z) {
-    const own = kind === "own";
-    cars.push({ X: own ? (Math.random() < .5 ? -0.85 : -2.45) : (kind === "amb" ? 0.85 : (Math.random() < .5 ? 0.85 : 2.45)),
-      z: z !== undefined ? z : (own ? NEAR - 0.05 : FAR), v: own ? rnd(1.5, 6) : -rnd(18, 28), own, amb: kind === "amb" });
+    const own = kind === "own", amb = kind === "amb", r = Math.random(), side = own ? -1 : 1;
+    const type = amb ? "amb" : r < 0.45 ? "moto" : r < 0.85 ? "car" : "pickup";
+    const X = amb ? 0.8 : type === "moto" ? side * rnd(2.75, 2.95) : side * (Math.random() < 0.5 ? 0.8 : 1.95);
+    // our side fades in at mid distance so a passing car never fills the screen behind the headline
+    cars.push({ X, type, own, amb, z: z !== undefined ? z : (own ? rnd(4, 5) : ONC_START), born: z !== undefined ? -10 : t,
+      v: own ? rnd(1, 4) : -rnd(11, 18), color: pickOne(BODY), shirt: pickOne(SHIRT),
+      helmet: Math.random() < 0.2 ? pickOne(HELMET) : null });
   }
-  for (let i = 0; i < 10; i++) spawn("onc", rnd(3, FAR));
-  for (let i = 0; i < 9; i++) spawn("own", rnd(1.5, FAR * 0.8));
+  for (let i = 0; i < 11; i++) spawn("onc", rnd(3, ONC_START));
+  for (let i = 0; i < 11; i++) spawn("own", rnd(4, OWN_END));
+  function shade(hex, f) {
+    const n = parseInt(hex.slice(1), 16), c = [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.min(255, Math.round(v * f * 0.85)));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  }
+  function rr(x, y, w, h, r) {
+    rc.beginPath(); rc.moveTo(x + r, y); rc.arcTo(x + w, y, x + w, y + h, r); rc.arcTo(x + w, y + h, x, y + h, r);
+    rc.arcTo(x, y + h, x, y, r); rc.arcTo(x, y, x + w, y, r); rc.closePath();
+  }
+  // vehicle shapes are drawn in metres around the ground point; y grows downwards, so heights are negative
+  const SPEC = { car: { hw: 0.7, belt: -0.82, top: -1.36, cw: 0.58, tw: 0.46 }, pickup: { hw: 0.76, belt: -0.98, top: -1.64, cw: 0.62, tw: 0.52 } };
+  function drawCar(c) {
+    const { hw, belt, top, cw, tw } = SPEC[c.type];
+    rc.fillStyle = "#06080d"; rc.fillRect(-hw + 0.06, -0.3, 0.26, 0.3); rc.fillRect(hw - 0.32, -0.3, 0.26, 0.3);
+    const g = rc.createLinearGradient(0, belt, 0, -0.2);
+    g.addColorStop(0, shade(c.color, 1.3)); g.addColorStop(1, shade(c.color, 0.7));
+    rc.fillStyle = g; rr(-hw, belt, hw * 2, -0.2 - belt, 0.1); rc.fill();
+    rc.fillStyle = shade(c.color, 1.1);
+    rc.beginPath(); rc.moveTo(-cw, belt); rc.lineTo(-tw, top + 0.04); rc.quadraticCurveTo(0, top - 0.04, tw, top + 0.04); rc.lineTo(cw, belt);
+    rc.closePath(); rc.fill();
+    const gl = rc.createLinearGradient(0, top, 0, belt);
+    gl.addColorStop(0, "#4a5f86"); gl.addColorStop(1, "#0b111d");
+    rc.fillStyle = gl;
+    rc.beginPath(); rc.moveTo(-cw + 0.08, belt - 0.04); rc.lineTo(-tw + 0.06, top + 0.11); rc.lineTo(tw - 0.06, top + 0.11);
+    rc.lineTo(cw - 0.08, belt - 0.04); rc.closePath(); rc.fill();
+    rc.strokeStyle = "rgba(255,214,160,.35)"; rc.lineWidth = 0.035;
+    rc.beginPath(); rc.moveTo(-tw, top + 0.04); rc.quadraticCurveTo(0, top - 0.04, tw, top + 0.04); rc.stroke();
+    if (c.own) {
+      rc.fillStyle = "#ff2b2b"; rc.fillRect(-hw + 0.04, belt + 0.1, 0.3, 0.12); rc.fillRect(hw - 0.34, belt + 0.1, 0.3, 0.12);
+      rc.fillStyle = "rgba(226,222,200,.8)"; rc.fillRect(-0.17, -0.5, 0.34, 0.12);
+    } else {
+      rc.fillStyle = "#fff4d6"; rc.fillRect(-hw + 0.06, belt + 0.16, 0.3, 0.1); rc.fillRect(hw - 0.36, belt + 0.16, 0.3, 0.1);
+      rc.fillStyle = "#090c13"; rc.fillRect(-0.3, belt + 0.16, 0.6, 0.12);
+    }
+  }
+  function drawMoto(c) {
+    rc.fillStyle = "#06080d"; rr(-0.07, -0.56, 0.14, 0.56, 0.05); rc.fill();
+    rc.fillStyle = shade(c.color, 1.15); rr(-0.21, -0.96, 0.42, 0.46, 0.1); rc.fill();
+    rc.strokeStyle = "#11151d"; rc.lineWidth = 0.05; rc.beginPath(); rc.moveTo(-0.36, -1.08); rc.lineTo(0.36, -1.08); rc.stroke();
+    rc.fillStyle = c.shirt;
+    rc.beginPath(); rc.moveTo(-0.25, -0.92); rc.lineTo(0.25, -0.92); rc.lineTo(0.2, -1.5); rc.quadraticCurveTo(0, -1.6, -0.2, -1.5); rc.closePath(); rc.fill();
+    rc.strokeStyle = c.shirt; rc.lineWidth = 0.09; rc.lineCap = "round";
+    rc.beginPath(); rc.moveTo(-0.19, -1.42); rc.lineTo(-0.33, -1.1); rc.moveTo(0.19, -1.42); rc.lineTo(0.33, -1.1); rc.stroke();
+    if (c.helmet) {
+      rc.fillStyle = c.helmet; rc.beginPath(); rc.arc(0, -1.72, 0.17, 0, Math.PI * 2); rc.fill();
+      rc.fillStyle = "rgba(255,255,255,.35)"; rc.beginPath(); rc.arc(-0.05, -1.78, 0.06, 0, Math.PI * 2); rc.fill();
+    } else {
+      rc.fillStyle = "#c69c7d"; rc.beginPath(); rc.arc(0, -1.69, 0.12, 0, Math.PI * 2); rc.fill();
+      rc.fillStyle = "#15110e"; rc.beginPath(); rc.arc(0, -1.72, 0.12, Math.PI, 0); rc.fill();
+    }
+    if (c.own) { rc.fillStyle = "#ff2b2b"; rc.fillRect(-0.09, -0.86, 0.18, 0.07); }
+    else { rc.fillStyle = "#fff4d6"; rc.beginPath(); rc.arc(0, -0.9, 0.08, 0, Math.PI * 2); rc.fill(); }
+  }
+  function drawVan(c) {
+    const hw = 0.82, on = Math.floor(t * 6) % 2 === 0;
+    rc.fillStyle = "#06080d"; rc.fillRect(-hw + 0.06, -0.3, 0.28, 0.3); rc.fillRect(hw - 0.34, -0.3, 0.28, 0.3);
+    rc.fillStyle = "#dfe3ea"; rr(-hw, -2.05, hw * 2, 1.84, 0.14); rc.fill();
+    const gl = rc.createLinearGradient(0, -1.95, 0, -1.3);
+    gl.addColorStop(0, "#4a5f86"); gl.addColorStop(1, "#0b111d");
+    rc.fillStyle = gl; rr(-hw + 0.1, -1.92, hw * 2 - 0.2, 0.6, 0.08); rc.fill();
+    rc.fillStyle = "#d62828"; rc.fillRect(-hw, -1.08, hw * 2, 0.13);
+    rc.fillStyle = "#fff4d6"; rc.fillRect(-hw + 0.08, -0.72, 0.3, 0.11); rc.fillRect(hw - 0.38, -0.72, 0.3, 0.11);
+    rc.fillStyle = on ? "#ff3030" : "#3a78ff"; rc.fillRect(-0.5, -2.2, 0.5, 0.15);
+    rc.fillStyle = on ? "#3a78ff" : "#ff3030"; rc.fillRect(0, -2.2, 0.5, 0.15);
+  }
+  function beam(c) {
+    if (c.own || c.z < NEAR + 0.4 || c.z > FAR * 0.8) return;
+    const zn = Math.max(NEAR, c.z - 8), w0 = c.type === "moto" ? 0.2 : 0.6, w1 = c.type === "moto" ? 1.1 : 2.1;
+    const a = P(c.X - w0, 0, c.z), b = P(c.X + w0, 0, c.z), q = P(c.X + w1, 0, zn), d = P(c.X - w1, 0, zn);
+    const g = rc.createLinearGradient(0, a[1], 0, d[1]), fade = Math.min(1, (FAR * 0.8 - c.z) / 20);
+    g.addColorStop(0, `rgba(255,236,200,${0.12 * fade})`); g.addColorStop(1, "rgba(255,236,200,0)");
+    rc.fillStyle = g; rc.beginPath(); rc.moveTo(a[0], a[1]); rc.lineTo(b[0], b[1]); rc.lineTo(q[0], q[1]); rc.lineTo(d[0], d[1]);
+    rc.closePath(); rc.fill();
+  }
+  function drawVehicles() {
+    rc.globalCompositeOperation = "lighter";
+    for (const c of cars) beam(c);
+    rc.globalCompositeOperation = "source-over";
+    for (const c of [...cars].sort((a, b) => b.z - a.z)) {
+      if (c.z < NEAR || c.z > FAR * 0.85) continue;
+      const k = S / c.z;
+      if (k < 1.5) continue;
+      rc.save();
+      rc.globalAlpha = Math.max(0, Math.min(1, (FAR * 0.85 - c.z) / 25, (t - c.born) / 0.8));
+      rc.translate(vpX + S * c.X / c.z, vpY + S / c.z); rc.scale(k, k);
+      rc.fillStyle = "rgba(0,0,0,.45)"; rc.beginPath(); rc.ellipse(0, 0, c.type === "moto" ? 0.35 : 0.88, 0.08, 0, 0, Math.PI * 2); rc.fill();
+      if (c.type === "moto") drawMoto(c); else if (c.type === "amb") drawVan(c); else drawCar(c);
+      rc.restore();
+    }
+  }
+  // where each vehicle carries its lamps, in metres above the road and to each side of its centre
+  function lamps(c) {
+    if (c.type === "moto") return [[0, c.own ? 0.82 : 0.9]];
+    if (c.type === "amb") return [[-0.59, 0.66], [0.59, 0.66]];
+    const { hw, belt } = SPEC[c.type];
+    return c.own ? [[-hw + 0.19, -belt - 0.16], [hw - 0.19, -belt - 0.16]] : [[-hw + 0.21, -belt - 0.21], [hw - 0.21, -belt - 0.21]];
+  }
   function drawRoad() {
     rc.clearRect(0, 0, W, H);
     const sky = rc.createLinearGradient(0, vpY - H * 0.4, 0, vpY + 1);
@@ -830,36 +935,36 @@ document.querySelectorAll("[data-reveal], .hero [data-count]").forEach(n => io.o
     }
     for (const c of cars) {
       if (c.z < NEAR || c.z > FAR) continue;
-      const fade = Math.min(1, (FAR - c.z) / 20), r = S * (c.own ? 0.13 : 0.2) / c.z;
-      for (const dx of [-0.33, 0.33]) {
-        const [x, y] = P(c.X + dx, 0.45, c.z), zt = c.z - c.v * TRAIL;
-        if (trail && !c.amb) streak(c.X + dx, 0.45, c.z, zt, r * 0.55, c.own ? "255,46,46" : "255,240,215", c.own ? 0.8 * fade : 0.7 * fade);
-        if (c.amb) {
-          const on = Math.floor(t * 6) % 2 === 0;
-          glow(x, y, r, "255,245,225", 0.95 * fade);
-          const [bx, by] = P(c.X + dx, 1.35, c.z);
-          glow(bx, by, r * 1.9, (dx < 0) === on ? "255,40,40" : "60,120,255", fade);
-        } else if (c.own) glow(x, y, r, "255,46,46", 0.95 * fade);
-        else { glow(x, y, r * 1.6, "255,236,200", 0.55 * fade); glow(x, y, r * 0.55, "255,255,255", fade); }
+      const fade = Math.max(0, Math.min(1, (FAR - c.z) / 20, (t - c.born) / 0.8)), r = S * (c.own ? 0.11 : 0.18) / c.z;
+      for (const [dx, Y] of lamps(c)) {
+        const [x, y] = P(c.X + dx, Y, c.z);
+        if (c.own) glow(x, y, r, "255,46,46", 0.9 * fade);
+        else { glow(x, y, r * 1.6, "255,236,200", 0.5 * fade); glow(x, y, r * 0.5, "255,255,255", fade); }
+      }
+      if (c.amb) {
+        const on = Math.floor(t * 6) % 2 === 0;
+        for (const [dx, col] of [[-0.25, on ? "255,40,40" : "60,120,255"], [0.25, on ? "60,120,255" : "255,40,40"]]) {
+          const [bx, by] = P(c.X + dx, 2.13, c.z); glow(bx, by, r * 2.4, col, fade);
+        }
       }
     }
   }
   function frame(now) {
     const dt = last ? Math.min(0.05, (now - last) / 1000) : 0.016; last = now; t += dt;
     for (const c of cars) c.z += c.v * dt;
-    for (let i = cars.length - 1; i >= 0; i--) if (cars[i].z < NEAR - 0.1 || cars[i].z > FAR) cars.splice(i, 1);
+    for (let i = cars.length - 1; i >= 0; i--) if (cars[i].z < NEAR - 0.1 || cars[i].z > (cars[i].own ? OWN_END : FAR)) cars.splice(i, 1);
     const onc = cars.filter(c => !c.own && !c.amb).length, own = cars.filter(c => c.own).length;
-    if (onc < 10 && Math.random() < dt * 2.6) spawn("onc");
-    if (own < 9 && Math.random() < dt * 1.6) spawn("own");
+    if (onc < 11 && Math.random() < dt * 2.4) spawn("onc");
+    if (own < 11 && Math.random() < dt * 1.8) spawn("own");
     vpX = baseX + Math.sin(t * 0.35) * W * 0.012;
-    drawRoad(); drawLights(true);
+    drawRoad(); drawVehicles(); drawLights(true);
     raf = visible && !document.hidden ? requestAnimationFrame(frame) : 0;
   }
   function start() { if (!raf && !reduce && visible && !document.hidden) { last = 0; raf = requestAnimationFrame(frame); } }
   resize();
-  if (reduce) { drawRoad(); drawLights(false); }
+  if (reduce) { drawRoad(); drawVehicles(); drawLights(false); }
   else start();
-  addEventListener("resize", () => { resize(); if (reduce) { drawRoad(); drawLights(false); } });
+  addEventListener("resize", () => { resize(); if (reduce) { drawRoad(); drawVehicles(); drawLights(false); } });
   new IntersectionObserver(es => { visible = es[0].isIntersecting; start(); }).observe(hero);
   document.addEventListener("visibilitychange", start);
   window.__heroAmbulance = () => spawn("amb");
